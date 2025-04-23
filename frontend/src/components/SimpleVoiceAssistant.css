@@ -1,0 +1,177 @@
+/* SimpleVoiceAssistant.css */
+.voice-assistant-container {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  max-width: 500px;
+  margin: 20px auto;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  background-color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  height: 600px;
+}
+
+.visualizer-container {
+  background-color: #f7f7f9;
+  padding: 15px;
+  height: 60px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border-bottom: 1px solid #eeeeee;
+}
+
+.control-section {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  overflow: hidden;
+}
+
+/* Styling for the control bar */
+:global(.lk-voice-assistant-control-bar) {
+  padding: 12px;
+  background-color: #f7f7f9;
+  border-top: 1px solid #eeeeee;
+  display: flex;
+  justify-content: center;
+}
+
+:global(.lk-button) {
+  border-radius: 50%;
+  margin: 0 8px;
+  transition: all 0.2s ease;
+}
+
+:global(.lk-button:hover) {
+  transform: scale(1.05);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+:global(.lk-button-listening) {
+  background-color: #7e41ff !important;
+}
+
+/* Conversation area */
+.conversation {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #ffffff;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Date divider */
+.date-divider {
+  text-align: center;
+  color: #888;
+  font-size: 0.8rem;
+  padding: 10px 0;
+  margin-bottom: 16px;
+  position: sticky;
+  top: 0;
+  background-color: rgba(255, 255, 255, 0.95);
+  z-index: 1;
+  border-bottom: 1px solid #eee;
+}
+
+/* Message container - Base styling */
+.message {
+  display: flex;
+  width: 100%;
+  padding: 4px 0;
+  margin: 8px 0;
+  position: relative;
+}
+
+/* Agent message (left side, purple) */
+.agent-message {
+  justify-content: flex-start;
+}
+
+.agent-message .message-content {
+  position: relative;
+  max-width: 70%;
+  margin-left: 42px;
+}
+
+.agent-message .message-content::before {
+  content: "";
+  position: absolute;
+  left: -42px;
+  top: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: #7e41ff;
+}
+
+.agent-message .message-text {
+  background-color: #7e41ff;
+  color: white;
+  border-radius: 18px;
+  padding: 12px 16px;
+  display: inline-block;
+  text-align: left;
+}
+
+/* User message (right side, blue) */
+.user-message {
+  justify-content: flex-end;
+}
+
+.user-message .message-content {
+  max-width: 70%;
+}
+
+.user-message .message-text {
+  background-color: #1a85ff;
+  color: white;
+  border-radius: 18px;
+  padding: 12px 16px;
+  display: inline-block;
+  text-align: left;
+}
+
+/* Time stamps */
+.message::after {
+  content: "5:55 PM";
+  position: absolute;
+  bottom: -14px;
+  font-size: 0.7rem;
+  color: #aaa;
+}
+
+.agent-message::after {
+  left: 42px;
+}
+
+.user-message::after {
+  right: 0;
+}
+
+/* Scrollbar styling */
+.conversation::-webkit-scrollbar {
+  width: 6px;
+}
+
+.conversation::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conversation::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.1);
+  border-radius: 20px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .voice-assistant-container {
+    margin: 0;
+    height: 100vh;
+    max-width: 100%;
+    border-radius: 0;
+  }
+}
