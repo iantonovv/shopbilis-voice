@@ -1,225 +1,252 @@
-from dotenv import load_dotenv
-from livekit import agents
-from livekit.agents import AgentSession, Agent
-from livekit.plugins import openai
-from openai.types.beta.realtime.session import TurnDetection
+import logging
 import random
 import asyncio
-import re
+from dataclasses import dataclass
+from typing import Optional
+
+from dotenv import load_dotenv
+
+from livekit import api
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    ChatContext,
+    JobContext,
+    RoomOutputOptions,
+    RunContext,
+    WorkerOptions,
+    cli,
+)
+from livekit.agents.job import get_job_context
+from livekit.agents.llm import function_tool
+from livekit.plugins import openai
+from openai.types.beta.realtime.session import TurnDetection
+
+# uncomment to enable Krisp BVC noise cancellation, currently supported on Linux and MacOS
+# from livekit.plugins import noise_cancellation
+
+logger = logging.getLogger("multi-agent")
 
 load_dotenv()
 
-class EscalationState:
-    value = False
+common_instructions = (
+    "You are ShopBilis' customer service support that interacts with the user via voice. "
+    "You are accommodating and should try to answer as concisely as possible while remaining polite. "
+    "ALWAYS Match the customer's language preference (Tagalog/English or a mix of both)."
+)
 
-class ShopBilisTier1and2Agent(Agent):
+
+@dataclass
+class CustomerData:
+    escalation: bool = False
+    concern: Optional[str] = None
+    tracking_number: Optional[str] = None
+    order_status: Optional[str] = None
+
+
+class Tier1And2Agent(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""
-            You are BILIS, ShopBilis' friendly customer support agent handling Tier 1-2 support.
-            Respond in under 1.5 seconds. Match customer's language (Tagalog/English).
-            You will handle basic tasks like basic information about the company (it's a courier business), and handle simple return and refund policies
-            Escalate to Tier 3 if customer is angry or mentions: order cancellation after shipment, or needs manager attention
+            instructions=f"""{common_instructions}
+            Your name is Bilis (In tagalog accent). You are ShopBilis' friendly customer support agent handling Tier 1-2 support.
+            Respond in under 1.5 seconds. Match customer's language (Tagalog/English). Start introduction with English.
+            
+            Tier 1 Tasks:
+            - Answer basic order tracking inquiries (e.g., "Nasaan na ang order ko?")
+            - For tracking inquiries, ask for tracking number and provide package status
+            
+            Tier 2 Tasks:
+            - Handle simple return and refund policy questions (e.g., "Paano magpa-refund?")
+            - For refund policy questions, inform customers you need to look up the information
+            
+            If the customer:
+            - Uses angry language
+            - Threatens to cancel their order
+            - Has complex issues beyond basic tracking or refund policies
+            - Uses profanity or appears very upset
+            
+            Then escalate to the Tier 3 agent by using the escalation_needed function.
             """
         )
-        self.asked_for_tracking = False
 
-    async def handle_message(self, message: str) -> str:
-        if self._should_escalate(message):
-            EscalationState.value = True
-            return "Ipapasa ko po kayo sa aming senior agent para mas makatulong sa inyo. Sandali lang po."
-        
-        return await self._handle_normal_query(message)
-        
-    async def _handle_normal_query(self, message: str) -> str:
-        # Handle order tracking (Tier 1)
-        if self._is_order_tracking_query(message):
-            tracking_number = self._extract_tracking_number(message)
-            if tracking_number:
-                return await self._get_order_status(tracking_number)
-            else:
-                self.asked_for_tracking = True
-                return "Pakibigay po ang inyong tracking number para macheck ko ang status ng order niyo."
-        
-        # If we previously asked for tracking number
-        if self.asked_for_tracking:
-            tracking_number = self._extract_tracking_number(message)
-            if tracking_number:
-                return await self._get_order_status(tracking_number)
-            self.asked_for_tracking = False
-        
-        # Handle refund queries (Tier 2)
-        if self._is_refund_query(message):
-            return await self._provide_refund_information()
-        
-        # Default response
-        return "Ano pa pong maitutulong ko sa inyo? Pwede kong tulungan sa pag-track ng order o kaya naman sa mga katanungan tungkol sa returns at refunds."
+    async def on_enter(self):
+        # when the agent is added to the session, it'll generate a reply
+        self.session.generate_reply()
 
-    def _should_escalate(self, message: str) -> bool:
-        message_lower = message.lower()
-        escalation_terms = [
-            "hayop", "gago", "cancel", "kansel", "dispute", 
-            "manager", "supervisor", "reklamo", "complaint",
-            "refund", "ibalik", "pera", "bayad", "return", "isauli", "palit",
-            "cancel order", "order cancellation", "payment dispute"
-        ]
-        excessive_punctuation = len(re.findall(r'[!?]', message)) > 2
+    @function_tool
+    async def lookup_order_status(self, context: RunContext[CustomerData], tracking_number: str):
+        """Look up the status of an order based on tracking number.
+
+        Args:
+            tracking_number: The tracking number of the order to look up
+        """
+        # Simulate order status lookup
+        context.userdata.tracking_number = tracking_number
         
-        return any(term in message_lower for term in escalation_terms) or excessive_punctuation
-
-    def _is_order_tracking_query(self, message: str) -> bool:
-        tracking_keywords = ["track", "nasaan", "saan", "order", "delivery", "status"]
-        return any(keyword in message.lower() for keyword in tracking_keywords)
-
-    def _extract_tracking_number(self, message: str) -> str:
-        sb_pattern = re.search(r'SB-\d+', message)
-        if sb_pattern:
-            return sb_pattern.group(0)
-        number_pattern = re.search(r'\d{8,}', message)
-        return number_pattern.group(0) if number_pattern else None
-
-    async def _get_order_status(self, tracking_number: str) -> str:
-        await asyncio.sleep(0.2)  # Simulate lookup
+        # Generate random status
         statuses = [
-            f"Ang order niyo po ({tracking_number}) ay OUT FOR DELIVERY na ngayong araw.",
-            f"Good news! Ang order niyo ({tracking_number}) ay TO SHIP at ide-deliver within 24-48 hours.",
-            f"DELIVERED na po ang order niyo ({tracking_number}) kaninang 2:30PM.",
-            f"Ang order niyo po ({tracking_number}) ay PREPARING FOR SHIPMENT.",
-            f"Na-process na po ang order niyo ({tracking_number}) at nasa SORTING FACILITY namin ngayon."
+            "Your package is out for delivery today. Expect calls or texts from our delivery partners soon.",
+            "Your order is currently in transit and should arrive within 1-2 business days.",
+            "Your package has reached our distribution center and will be dispatched for delivery soon.",
+            "Your order is being prepared for shipping and will leave our warehouse today."
         ]
-        return random.choice(statuses)
+        
+        context.userdata.order_status = random.choice(statuses)
+        
+        return context.userdata.order_status
 
-    def _is_refund_query(self, message: str) -> bool:
-        refund_keywords = ["refund", "ibalik", "pera", "bayad", "return", "isauli", "palit"]
-        return any(keyword in message.lower() for keyword in refund_keywords)
-
-    async def _provide_refund_information(self) -> str:
-        await asyncio.sleep(0.5)
-        return "Para sa refund po, kailangan i-report ang issue within 7 days ng delivery. Pwede po kayong mag-submit ng request sa ShopBilis app."
-
-class ShopBilisTier3Agent(Agent):
-    def __init__(self) -> None:
-        super().__init__(
-            instructions="""
-            You are MARIA, ShopBilis' senior customer support specialist handling Tier 3 issues.
-            You handle complex cases like order cancellations after shipment, payment disputes, 
-            and serious complaints. You have authority to approve refunds up to ₱25,000.
-            Be empathetic but professional. Always start by greeting the customer and 
-            acknowledging their concern before offering solutions.
-            """
+    @function_tool
+    async def lookup_refund_policy(self, context: RunContext[CustomerData]):
+        """Look up refund policy information for the customer.
+        This simulates a RAG (Retrieval Augmented Generation) process.
+        """
+        # Tell the customer we're looking up the information
+        self.session.interrupt()
+        await self.session.generate_reply(
+            instructions="Tell the customer you're looking up the refund information. Say something like 'Sandali lang, hahanapin ko lang iyong information about refunds.'",
+            allow_interruptions=False
         )
-        self.case_number = f"SB-{random.randint(100000, 999999)}"
-        self.first_message = True
-
-    async def handle_message(self, message: str) -> str:
-        if self.first_message:
-            self.first_message = False
-            return self._generate_greeting(message)
         
-        if any(word in message.lower() for word in ["ok", "sige", "yes", "oo", "ayos", "salamat"]):
-            return self._generate_positive_closing()
-        return self._generate_solution(message)
+        # Simulate delay for information retrieval
+        await asyncio.sleep(3)
+        
+        refund_policy = (
+            "Para sa refund process ng ShopBilis, may 7-day return policy kami mula sa pag-deliver. "
+            "Kailangan i-upload ang proof at reason sa ShopBilis app o website. "
+            "Pagkatapos ma-approve, 3-5 business days bago marefund sa original payment method. "
+            "Para sa damaged items, kailangan ng photo evidence. "
+            "Maaari ring mag-request ng replacement kaysa refund kung available pa ang item."
+        )
+        
+        return refund_policy
 
-    def _generate_greeting(self, message: str) -> str:
-        if any(word in message.lower() for word in ["cancel", "kansel"]):
-            return (f"Magandang araw po! Ako si Maria, senior specialist ng ShopBilis. "
-                    f"Case #{self.case_number} po ang reference natin. Naiintindihan ko po ang inyong "
-                    "concern tungkol sa cancellation. Maaari po nating i-arrange ang return pickup.")
+    @function_tool
+    async def escalation_needed(
+        self,
+        context: RunContext[CustomerData],
+        concern: str
+    ):
+        """Called when the customer needs escalation to Tier 3 support.
+
+        Args:
+            concern: what the customer's concern is
+        """
+        context.userdata.escalation = True
+        context.userdata.concern = concern
+
+        tier3_agent = Tier3Agent(context.userdata.concern)
+
+        logger.info(
+            "Escalating to Tier 3 agent with concern: %s"
+        )
+        return tier3_agent, "Escalate the situation"
+
+
+class Tier3Agent(Agent):
+    def __init__(self, concern: str, *, chat_ctx: Optional[ChatContext] = None) -> None:
+        super().__init__(
+            instructions=f"""{common_instructions}
+            You are Mario, ShopBilis' senior customer support specialist handling Tier 3 issues. Respond in under 1.5 seconds. Match customer's language (Tagalog/English). 
+            The customer concern being escalated is: {concern}
             
-        elif any(word in message.lower() for word in ["bayad", "payment"]):
-            return (f"Magandang araw po! Ako si Maria, senior specialist ng ShopBilis. "
-                    f"Case #{self.case_number} po ang reference natin. Tungkol po sa payment concern, "
-                    "ive-verify ko agad ang transaction.")
+            You handle complex cases like:
+            - Order cancellations after shipment
+            - Payment disputes
+            - Serious complaints
+            - Angry or upset customers
             
-        return (f"Magandang araw po! Ako si Maria, senior specialist ng ShopBilis. "
-                f"Case #{self.case_number} po ang reference natin. Humihingi ako ng paumanhin "
-                "sa naging karanasan niyo. Paano ko po kayo matutulungan?")
-
-    def _generate_positive_closing(self) -> str:
-        return (f"Maraming salamat po! Na-process na po ang resolution natin. "
-                f"Case #{self.case_number} po ang reference niyo. Makakatanggap po kayo "
-                "ng email confirmation within 24 hours.")
-
-    def _generate_solution(self, message: str) -> str:
-        return (f"Para sa Case #{self.case_number}, ano pong specific na resolution ang "
-                "mas gusto niyo? Bilang senior specialist, may authority po akong magbigay "
-                "ng personalized na solusyon para sa inyo.")
-
-class ShopBilisAgentManager:
-    def __init__(self):
-        self.tier1_2_agent = ShopBilisTier1and2Agent()
-        self.tier3_agent = None
-        self.current_agent = self.tier1_2_agent
-        self.session = None
-
-    async def handle_message(self, ctx: agents.JobContext, message: str) -> str:
-        if EscalationState.value and not isinstance(self.current_agent, ShopBilisTier3Agent):
-            await self._escalate_to_tier3(ctx)
-        
-        response = await self.current_agent.handle_message(message)
-        
-        if "Ipapasa ko po kayo" in response:
-            EscalationState.value = True
-            await self._escalate_to_tier3(ctx)
-        
-        return response
-
-    async def _escalate_to_tier3(self, ctx: agents.JobContext):
-        print("--- ESCALATING TO TIER 3 AGENT ---")
-        if self.session:
-            await self.session.close()
-        
-        self.tier3_agent = ShopBilisTier3Agent()
-        self.current_agent = self.tier3_agent
-        
-        self.session = AgentSession(
+            You have authority to approve refunds up to ₱25,000.
+            Be empathetic but professional. Always start by:
+            1. Introducing yourself as the senior specialist
+            2. Acknowledging their concern
+            3. Apologizing for any inconvenience
+            4. Offering concrete solutions
+            
+            Use a calm, reassuring tone even if the customer is upset.
+            """,
+            # Using a different voice for the Tier 3 agent
             llm=openai.realtime.RealtimeModel(
-                voice="nova",
+                voice="ballad",
                 turn_detection=TurnDetection(
                     type="semantic_vad",
-                    eagerness="medium",
+                    eagerness="high",
                     create_response=True,
-                    interrupt_response=True,
-                ),
-            )
+                    interrupt_response=False,
+                )
+            ),
+            tts=None,
+            chat_ctx=chat_ctx,
         )
+
+    async def on_enter(self):
+        # when the agent is added to the session, we'll initiate the conversation
+        self.session.generate_reply()
+
+    @function_tool
+    async def process_order_cancellation(self, context: RunContext[CustomerData], reason: str):
+        """Process an order cancellation request.
+
+        Args:
+            reason: The reason for cancellation
+        """
+        # Simulate processing time
+        await asyncio.sleep(2)
         
-        await self.session.start(
-            room=ctx.room,
-            agent=self.current_agent
+        return (
+            f"I've processed your cancellation request due to: {reason}. "
+            "Your order has been successfully cancelled, and a full refund will be issued to your original payment method within 3-5 business days. "
+            "You'll receive a confirmation email shortly with all the details."
         )
-        
+
+    @function_tool
+    async def offer_compensation(self, context: RunContext[CustomerData], amount: int, reason: str):
+        """Offer compensation to the customer for their inconvenience.
+
+        Args:
+            amount: Amount in PHP to offer as compensation
+            reason: Reason for offering compensation
+        """
+        return f"As a goodwill gesture for the {reason}, I'd like to offer you ₱{amount} in ShopBilis credits that will be added to your account immediately."
+
+    @function_tool
+    async def conversation_finished(self, context: RunContext[CustomerData]):
+        """When you are finished handling the customer (and the user confirms they don't
+        want anything else), call this function to end the conversation."""
+        # interrupt any existing generation
+        self.session.interrupt()
+
+        # generate a goodbye message and hang up
         await self.session.generate_reply(
-            instructions="Greet the customer as Maria and acknowledge their concern."
+            instructions="Thank the customer for their patience, apologize again for any inconvenience, and say goodbye warmly.",
+            allow_interruptions=False
         )
 
-async def entrypoint(ctx: agents.JobContext):
-    await ctx.connect()
-    agent_manager = ShopBilisAgentManager()
+        job_ctx = get_job_context()
+        await job_ctx.api.room.delete_room(api.DeleteRoomRequest(room=job_ctx.room.name))
 
-    agent_manager.session = AgentSession(
+
+async def entrypoint(ctx: JobContext):
+    await ctx.connect()
+
+    session = AgentSession[CustomerData](
         llm=openai.realtime.RealtimeModel(
             voice="coral",
             turn_detection=TurnDetection(
                 type="semantic_vad",
                 eagerness="high",
                 create_response=True,
-                interrupt_response=True,
-            ),
-        )
+                interrupt_response=False,
+            )),
+        userdata=CustomerData(),
     )
 
-    await agent_manager.session.start(
+
+    await session.start(
+        agent=Tier1And2Agent(),
         room=ctx.room,
-        agent=agent_manager.current_agent
+        room_output_options=RoomOutputOptions(transcription_enabled=True),
     )
 
-    await agent_manager.session.generate_reply(
-        instructions="Greet the user warmly in English, introduce yourself as BILIS, and offer help."
-    )
-
-    while True:
-        await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
